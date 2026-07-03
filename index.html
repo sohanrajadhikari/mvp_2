@@ -1,0 +1,1036 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>BusBin — Live Transit Tracker</title>
+  <meta name="description" content="BusBin — Real-time bus tracking for the Kathmandu Ratnapark to Budhanilkantha transit route.">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { theme: { extend: { fontFamily: { sans: ['Outfit','Inter','sans-serif'] } } } };</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <style>
+    html, body { height:100%; margin:0; padding:0; overflow:hidden; }
+
+    /* ── Bus tooltip ──────────────────── */
+    .bus-tooltip { background:transparent!important; border:none!important; box-shadow:none!important; padding:0!important; }
+    .bus-tooltip::before { display:none!important; }
+    .bus-label { display:flex; flex-direction:column; align-items:center; pointer-events:none; }
+    .bus-label .bubble {
+      background:#0f172a; border:1.5px solid #334155; border-radius:10px;
+      padding:4px 9px; font-family:'Outfit',sans-serif; font-size:11px; font-weight:600;
+      color:#f8fafc; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,0.65); line-height:1.4;
+    }
+    .bus-label .bubble .hi { color:#34d399; }
+    .bus-label .tail { width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:6px solid #334155; margin-top:-1px; }
+
+    /* ── Stop dot ─────────────────────── */
+    .stop-dot { width:10px; height:10px; background:#38bdf8; border:2px solid #0f172a; border-radius:50%; box-shadow:0 0 0 3px rgba(56,189,248,0.2); }
+
+    /* ── User location pin ────────────── */
+    .user-pin-outer { width:22px; height:22px; border-radius:50%; background:rgba(168,85,247,0.25); border:2px solid #a855f7; display:flex; align-items:center; justify-content:center; animation:userPulse 2s ease-in-out infinite; }
+    .user-pin-inner { width:10px; height:10px; border-radius:50%; background:#a855f7; box-shadow:0 0 6px #a855f7; }
+    @keyframes userPulse { 0%,100% { box-shadow:0 0 0 0 rgba(168,85,247,0.5); } 50% { box-shadow:0 0 0 8px rgba(168,85,247,0); } }
+
+    /* ── Leaflet ──────────────────────── */
+    .leaflet-control-attribution { display:none!important; }
+    .leaflet-control-zoom a { background:#1e293b!important; color:#94a3b8!important; border-color:#334155!important; }
+    .leaflet-control-zoom a:hover { background:#0f172a!important; color:#f8fafc!important; }
+
+    /* ── Scrollbar ────────────────────── */
+    .no-scroll::-webkit-scrollbar { display:none; }
+    .no-scroll { -ms-overflow-style:none; scrollbar-width:none; }
+
+    /* ── Views ────────────────────────── */
+    .view { position:absolute; inset:0; transition:opacity 0.22s ease; }
+    .view.hidden-view { opacity:0; pointer-events:none; z-index:0; }
+    .view.active-view  { opacity:1; pointer-events:all; z-index:10; }
+
+    /* ── Number pop ───────────────────── */
+    .num-update { animation:numPop 0.35s ease; }
+    @keyframes numPop { 0% { transform:scale(1); } 40% { transform:scale(1.1); color:#34d399; } 100% { transform:scale(1); } }
+
+    /* ── Fill bar ─────────────────────── */
+    .fill-bar { transition:width 0.7s cubic-bezier(0.4,0,0.2,1); }
+
+    /* ── Map loading ──────────────────── */
+    #map-loading { position:absolute; inset:0; z-index:5000; background:#0f172a; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
+    .spinner { width:36px; height:36px; border-radius:50%; border:3px solid #1e293b; border-top-color:#38bdf8; animation:spin 0.8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+
+    /* ── Role Selection Screen ────────── */
+    #role-screen {
+      position:fixed; inset:0; z-index:99999;
+      background:#020617;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      padding:24px;
+      transition:opacity 0.4s ease, transform 0.4s ease;
+    }
+    #role-screen.exit {
+      opacity:0; transform:scale(1.04); pointer-events:none;
+    }
+    .role-card {
+      width:100%; border-radius:20px; padding:22px 20px; cursor:pointer;
+      transition:transform 0.18s ease, box-shadow 0.18s ease;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .role-card:active { transform:scale(0.97); }
+
+    /* ── Inspect Sheet ────────────────── */
+    #inspect-sheet {
+      position:fixed; bottom:0; left:0; right:0; z-index:9999;
+      background:#0f172a; border-top:1px solid #1e293b;
+      border-radius:20px 20px 0 0;
+      transform:translateY(100%);
+      transition:transform 0.35s cubic-bezier(0.32,0.72,0,1);
+      box-shadow:0 -8px 40px rgba(0,0,0,0.7);
+      max-height:82vh; overflow-y:auto;
+    }
+    #inspect-sheet.open { transform:translateY(0); }
+    #sheet-backdrop {
+      position:fixed; inset:0; z-index:9998;
+      background:rgba(0,0,0,0.55); backdrop-filter:blur(3px);
+      opacity:0; pointer-events:none; transition:opacity 0.25s ease;
+    }
+    #sheet-backdrop.open { opacity:1; pointer-events:all; }
+
+    /* ── ETA badges ───────────────────── */
+    .eta-soon { background:rgba(34,197,94,0.12);  color:#4ade80; border-color:rgba(34,197,94,0.25); }
+    .eta-mid  { background:rgba(251,191,36,0.12); color:#fbbf24; border-color:rgba(251,191,36,0.25); }
+    .eta-far  { background:rgba(248,113,113,0.12);color:#f87171; border-color:rgba(248,113,113,0.25); }
+
+    /* ── Role badge in header ─────────── */
+    .badge-passenger { background:rgba(168,85,247,0.12); color:#c084fc; border:1px solid rgba(168,85,247,0.25); }
+    .badge-owner     { background:rgba(52,211,153,0.12); color:#34d399;  border:1px solid rgba(52,211,153,0.25); }
+  </style>
+</head>
+
+<body class="h-full bg-slate-950 text-slate-100 font-sans overflow-hidden select-none">
+
+<!-- ══════════════════════════════════════════════════════
+     ROLE SELECTION SCREEN
+════════════════════════════════════════════════════════ -->
+<div id="role-screen">
+  <!-- Logo -->
+  <div class="flex items-center gap-3 mb-10">
+    <img src="./images/logo.jpg" alt="BusBin Logo"
+      class="w-12 h-12 rounded-2xl object-cover border border-slate-700 shadow-xl"
+      onerror="this.style.display='none';document.getElementById('logo-fb-rs').style.display='flex';">
+    <span id="logo-fb-rs" class="hidden w-12 h-12 rounded-2xl bg-sky-600 items-center justify-center shadow-xl">
+      <i class="fa-solid fa-bus text-white text-xl"></i>
+    </span>
+    <div>
+      <h1 class="text-3xl font-extrabold leading-tight"
+        style="background:linear-gradient(90deg,#38bdf8,#34d399);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">BusBin</h1>
+      <p class="text-[10px] text-slate-500 font-medium tracking-widest uppercase">Kathmandu Transit</p>
+    </div>
+  </div>
+
+  <p class="text-slate-400 text-sm font-medium mb-8 text-center">Choose your portal to continue</p>
+
+  <div class="w-full max-w-sm space-y-4">
+    <!-- Passenger Card -->
+    <div class="role-card" onclick="selectRole('passenger')"
+      style="background:linear-gradient(135deg,#1a0d2e 0%,#0f172a 100%);border:1.5px solid rgba(168,85,247,0.3);box-shadow:0 8px 32px rgba(168,85,247,0.12);">
+      <div class="flex items-center gap-4">
+        <div class="w-14 h-14 rounded-2xl flex items-center justify-center flex-none"
+          style="background:rgba(168,85,247,0.15);border:1.5px solid rgba(168,85,247,0.3);">
+          <i class="fa-solid fa-person-walking text-purple-400 text-2xl"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-base font-bold text-white">I'm a Passenger</p>
+          <p class="text-xs text-slate-400 mt-0.5 leading-relaxed">Track buses, check arrival times & plan your journey.</p>
+        </div>
+        <i class="fa-solid fa-chevron-right text-purple-500/60 flex-none"></i>
+      </div>
+    </div>
+
+    <!-- Owner Card -->
+    <div class="role-card" onclick="selectRole('owner')"
+      style="background:linear-gradient(135deg,#061a12 0%,#0f172a 100%);border:1.5px solid rgba(52,211,153,0.3);box-shadow:0 8px 32px rgba(52,211,153,0.1);">
+      <div class="flex items-center gap-4">
+        <div class="w-14 h-14 rounded-2xl flex items-center justify-center flex-none"
+          style="background:rgba(52,211,153,0.12);border:1.5px solid rgba(52,211,153,0.3);">
+          <i class="fa-solid fa-gauge-high text-emerald-400 text-2xl"></i>
+        </div>
+        <div class="flex-1">
+          <p class="text-base font-bold text-white">I'm an Owner</p>
+          <p class="text-xs text-slate-400 mt-0.5 leading-relaxed">Monitor your fleet, riders & live revenue in real-time.</p>
+        </div>
+        <i class="fa-solid fa-chevron-right text-emerald-500/60 flex-none"></i>
+      </div>
+    </div>
+  </div>
+
+  <p class="text-slate-600 text-[10px] mt-10 text-center">Data is simulated for demonstration purposes</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     APP SHELL  (hidden until role is selected)
+════════════════════════════════════════════════════════ -->
+<div id="app-shell" class="h-full flex flex-col" style="display:none!important;">
+
+  <!-- ── HEADER ── -->
+  <header class="flex-none flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 z-50">
+    <div class="flex items-center gap-3">
+      <img src="./images/logo.jpg" alt="BusBin Logo"
+        class="w-9 h-9 rounded-xl object-cover border border-slate-700 shadow-lg"
+        onerror="this.style.display='none';document.getElementById('logo-fb-app').style.display='flex';">
+      <span id="logo-fb-app" class="hidden w-9 h-9 rounded-xl bg-sky-600 items-center justify-center shadow-lg">
+        <i class="fa-solid fa-bus text-white text-base"></i>
+      </span>
+      <div>
+        <h1 class="text-lg font-bold leading-tight"
+          style="background:linear-gradient(90deg,#38bdf8,#34d399);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">BusBin</h1>
+        <p class="text-[9px] text-slate-500 font-medium tracking-widest uppercase">Kathmandu Transit</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <!-- Role badge -->
+      <span id="role-badge" class="text-[10px] font-bold px-2.5 py-1 rounded-full tracking-wide"></span>
+      <!-- Switch portal -->
+      <button onclick="showRoleSelect()"
+        class="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 active:bg-slate-700"
+        title="Switch portal">
+        <i class="fa-solid fa-right-left text-xs"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── MAIN ── -->
+  <main class="flex-1 relative overflow-hidden">
+
+    <!-- MAP VIEW (shared by both portals) -->
+    <div id="view-map" class="view active-view flex flex-col">
+      <div id="map" class="w-full flex-1 relative">
+        <div id="map-loading">
+          <div class="spinner"></div>
+          <div class="text-center">
+            <p class="text-sm font-semibold text-slate-200">Loading Street Route</p>
+            <p class="text-[11px] text-slate-500 mt-1">Fetching road data from OpenStreetMap…</p>
+          </div>
+        </div>
+      </div>
+      <!-- Bottom overlay card -->
+      <div class="absolute bottom-4 left-3 right-3 z-[999]">
+        <div class="bg-slate-900/95 backdrop-blur-md rounded-2xl border border-slate-700/60 shadow-2xl overflow-hidden">
+          <div class="flex items-center gap-3 px-4 py-3 border-b border-slate-800/80">
+            <div class="w-8 h-8 rounded-lg bg-sky-500/15 flex items-center justify-center flex-none">
+              <i class="fa-solid fa-route text-sky-400 text-sm"></i>
+            </div>
+            <div class="min-w-0 flex-1">
+              <p class="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Active Route</p>
+              <p class="text-sm font-bold text-white truncate">Ratnapark → Budhanilkantha</p>
+            </div>
+            <span id="route-badge" class="text-[10px] bg-slate-800 text-slate-300 px-2.5 py-1 rounded-full font-medium flex-none">via Maharajgunj</span>
+          </div>
+          <div id="map-bus-chips" class="flex gap-2 px-4 py-2.5 overflow-x-auto no-scroll"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─────── PASSENGER: MY TRIP VIEW ─────── -->
+    <div id="view-trip" class="view hidden-view overflow-y-auto no-scroll bg-slate-950 px-4 py-5">
+      <div class="max-w-lg mx-auto space-y-4 pb-4">
+
+        <!-- Your Location -->
+        <div class="rounded-2xl bg-purple-950/30 border border-purple-800/30 p-4 flex items-center gap-4">
+          <div class="w-11 h-11 rounded-xl bg-purple-500/15 flex items-center justify-center flex-none relative">
+            <i class="fa-solid fa-location-dot text-purple-400 text-lg"></i>
+            <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-purple-500 border-2 border-slate-950 animate-pulse"></span>
+          </div>
+          <div class="flex-1">
+            <p class="text-[10px] text-purple-400 uppercase tracking-wider font-bold">Your Location</p>
+            <p class="text-base font-bold text-white">Lazimpat</p>
+            <p class="text-[10px] text-slate-400">Kathmandu, Nepal · Fixed stop</p>
+          </div>
+          <div class="text-right">
+            <p class="text-[10px] text-slate-500 uppercase tracking-wider">Flat Fare</p>
+            <p class="text-lg font-extrabold text-purple-300">NPR 25</p>
+          </div>
+        </div>
+
+        <!-- Fare Info -->
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4 flex gap-4 items-center">
+          <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center flex-none">
+            <i class="fa-solid fa-ticket text-amber-400 text-base"></i>
+          </div>
+          <div class="flex-1">
+            <p class="text-xs font-semibold text-white">Standard Ticket</p>
+            <p class="text-[10px] text-slate-400 mt-0.5">Fixed route fare for any stop between Ratnapark and Budhanilkantha.</p>
+          </div>
+          <div class="flex-none text-right">
+            <p class="text-2xl font-extrabold text-amber-400">25</p>
+            <p class="text-[9px] text-slate-500 font-semibold uppercase tracking-wider">NPR</p>
+          </div>
+        </div>
+
+        <!-- Approaching buses header -->
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-sky-400 animate-pulse"></span>
+            <h2 class="text-xs font-bold text-slate-300 uppercase tracking-widest">Buses Approaching Lazimpat</h2>
+          </div>
+          <span class="text-[10px] text-slate-500">sorted by ETA</span>
+        </div>
+
+        <!-- Bus list (injected by JS) -->
+        <div id="trip-bus-list" class="space-y-3">
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 p-6 flex items-center justify-center gap-3 text-slate-500">
+            <div class="spinner" style="width:20px;height:20px;border-width:2px;"></div>
+            <span class="text-sm">Loading route…</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ─────── OWNER: DASHBOARD VIEW ─────── -->
+    <div id="view-dash" class="view hidden-view overflow-y-auto no-scroll bg-slate-950 px-4 py-5">
+      <div class="max-w-lg mx-auto space-y-5 pb-4">
+
+        <!-- Summary cards -->
+        <div class="grid grid-cols-2 gap-3">
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4 flex flex-col gap-1">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Total Riders</span>
+              <span class="w-7 h-7 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center text-xs"><i class="fa-solid fa-users"></i></span>
+            </div>
+            <p id="stat-riders" class="text-3xl font-extrabold text-white mt-1">—</p>
+            <p class="text-[10px] text-sky-400"><i class="fa-solid fa-arrow-trend-up mr-1"></i>Across 5 active buses</p>
+          </div>
+          <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4 flex flex-col gap-1">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Live Revenue</span>
+              <span class="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xs"><i class="fa-solid fa-sack-dollar"></i></span>
+            </div>
+            <p id="stat-revenue" class="text-3xl font-extrabold text-white mt-1">—</p>
+            <p class="text-[10px] text-emerald-400"><i class="fa-solid fa-circle-info mr-1"></i>@ 25 NPR / rider</p>
+          </div>
+        </div>
+
+        <!-- Capacity bar -->
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 p-4 space-y-2">
+          <div class="flex justify-between items-center text-xs">
+            <span class="text-slate-400 font-semibold uppercase tracking-wider">Fleet Capacity</span>
+            <span id="stat-cap-pct" class="text-slate-300 font-bold">—%</span>
+          </div>
+          <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
+            <div id="cap-bar" class="h-full rounded-full fill-bar" style="width:0%;background:linear-gradient(90deg,#38bdf8,#34d399);"></div>
+          </div>
+          <p class="text-[10px] text-slate-500">Max capacity: 35 riders / bus · 5 buses = 175 total</p>
+        </div>
+
+        <!-- Fleet table -->
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden shadow-xl">
+          <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Active Fleet</h2>
+            </div>
+            <span class="text-[10px] text-slate-500 bg-slate-800 px-2.5 py-1 rounded-full">5 buses online</span>
+          </div>
+          <table class="w-full text-left">
+            <thead>
+              <tr class="border-b border-slate-800/60 text-[9px] uppercase tracking-widest text-slate-500">
+                <th class="py-3 px-4">Bus ID</th>
+                <th class="py-3 px-4 text-center">Riders</th>
+                <th class="py-3 px-4 text-center">Load</th>
+                <th class="py-3 px-4 text-right">Revenue</th>
+              </tr>
+            </thead>
+            <tbody id="fleet-tbody" class="divide-y divide-slate-800/50 text-sm"></tbody>
+          </table>
+        </div>
+
+        <!-- Route info -->
+        <div class="rounded-2xl border border-sky-900/30 bg-sky-950/20 p-4 flex items-start gap-3">
+          <div class="w-9 h-9 rounded-xl bg-sky-500/10 flex items-center justify-center flex-none mt-0.5">
+            <i class="fa-solid fa-map-pin text-sky-400"></i>
+          </div>
+          <div>
+            <h3 class="text-sm font-semibold text-white">Route: Ratnapark ↔ Budhanilkantha</h3>
+            <p class="text-xs text-slate-400 mt-0.5 leading-relaxed">Passes through Jamal · Kantipath · Lainchaur · Lazimpat · Maharajgunj · Golfutar · Budhanilkantha. Buses loop continuously.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── BOTTOM NAV ── -->
+  <nav id="bottom-nav" class="flex-none bg-slate-900 border-t border-slate-800 z-50 flex"></nav>
+
+</div><!-- end app-shell -->
+
+<!-- ══════════ INSPECT SHEET ══════════ -->
+<div id="sheet-backdrop" onclick="closeSheet()"></div>
+<div id="inspect-sheet" class="no-scroll">
+  <div class="flex justify-center pt-3 pb-1">
+    <div class="w-10 h-1 rounded-full bg-slate-700"></div>
+  </div>
+  <div id="sheet-content" class="px-5 pb-8 pt-2"></div>
+</div>
+
+<!-- ════════════════ SCRIPT ════════════════ -->
+<script>
+// ─────────────────────────────────────────────
+//  CONSTANTS
+// ─────────────────────────────────────────────
+const FARE    = 25;
+const MAX_CAP = 35;
+
+const WAYPOINTS = [
+  { latlng:[27.7064,85.3149], name:'Ratnapark'     },
+  { latlng:[27.7085,85.3148], name:'Jamal'         },
+  { latlng:[27.7125,85.3140], name:'Kantipath'     },
+  { latlng:[27.7175,85.3118], name:'Lainchaur'     },
+  { latlng:[27.7255,85.3178], name:'Lazimpat'      }, // index 4 = user stop
+  { latlng:[27.7318,85.3245], name:'Sallaghari'    },
+  { latlng:[27.7395,85.3335], name:'Maharajgunj'   },
+  { latlng:[27.7478,85.3400], name:'Basundhara'    },
+  { latlng:[27.7582,85.3488], name:'Golfutar'      },
+  { latlng:[27.7675,85.3558], name:'Hattigaunda'   },
+  { latlng:[27.7791,85.3625], name:'Budhanilkantha'},
+];
+const USER_STOP_IDX    = 4;
+const USER_STOP_LATLNG = WAYPOINTS[USER_STOP_IDX].latlng;
+
+// ─────────────────────────────────────────────
+//  ROLE STATE
+// ─────────────────────────────────────────────
+let currentRole = null;  // 'passenger' | 'owner'
+let currentView = 'map'; // 'map' | 'trip' | 'dash'
+
+const PORTAL_CFG = {
+  passenger: {
+    badge:    'PASSENGER',
+    badgeCls: 'badge-passenger',
+    views:    ['map','trip'],
+    navItems: [
+      { id:'nav-map',  view:'map',  icon:'fa-map-location-dot', label:'Map',     color:'text-purple-400', bg:'bg-purple-500/10' },
+      { id:'nav-trip', view:'trip', icon:'fa-person-walking',   label:'My Trip', color:'text-purple-400', bg:'bg-purple-500/10' },
+    ],
+  },
+  owner: {
+    badge:    'OWNER',
+    badgeCls: 'badge-owner',
+    views:    ['map','dash'],
+    navItems: [
+      { id:'nav-map',  view:'map',  icon:'fa-map-location-dot', label:'Map',      color:'text-emerald-400', bg:'bg-emerald-500/10' },
+      { id:'nav-dash', view:'dash', icon:'fa-gauge-high',        label:'Dashboard',color:'text-emerald-400', bg:'bg-emerald-500/10' },
+    ],
+  },
+};
+
+// ─────────────────────────────────────────────
+//  ROLE SELECTION
+// ─────────────────────────────────────────────
+function selectRole(role) {
+  currentRole = role;
+  localStorage.setItem('busbin_role', role);
+
+  // Animate out role screen
+  const rs = document.getElementById('role-screen');
+  rs.classList.add('exit');
+  setTimeout(() => rs.style.display = 'none', 420);
+
+  // Show app shell
+  const shell = document.getElementById('app-shell');
+  shell.style.removeProperty('display');
+
+  // Apply portal config
+  const cfg = PORTAL_CFG[role];
+
+  // Header badge
+  const badge = document.getElementById('role-badge');
+  badge.textContent = cfg.badge;
+  badge.className   = `text-[10px] font-bold px-2.5 py-1 rounded-full tracking-wide ${cfg.badgeCls}`;
+
+  // Build nav buttons
+  const nav = document.getElementById('bottom-nav');
+  nav.innerHTML = cfg.navItems.map(item => `
+    <button id="${item.id}" onclick="switchView('${item.view}')"
+      class="flex-1 flex flex-col items-center gap-1 py-2.5 text-slate-500 transition-colors duration-200">
+      <div class="w-10 h-7 rounded-lg flex items-center justify-center">
+        <i class="fa-solid ${item.icon} text-base"></i>
+      </div>
+      <span class="text-[9px] font-bold uppercase tracking-widest">${item.label}</span>
+    </button>`).join('');
+
+  // Switch to map by default
+  switchView('map');
+
+  // Kick off map init if not done yet
+  if (!mapReady) initApp();
+}
+
+function showRoleSelect() {
+  const rs = document.getElementById('role-screen');
+  rs.classList.remove('exit');
+  rs.style.display = '';
+  document.getElementById('app-shell').style.display = 'none';
+}
+
+// ─────────────────────────────────────────────
+//  VIEW SWITCHING
+// ─────────────────────────────────────────────
+function switchView(v) {
+  currentView = v;
+  const cfg   = PORTAL_CFG[currentRole];
+
+  // Toggle views
+  ['map','trip','dash'].forEach(id => {
+    const el = document.getElementById('view-' + id);
+    if (!el) return;
+    el.classList.replace(
+      cfg.views.includes(id) && id === v ? 'hidden-view' : 'active-view',
+      cfg.views.includes(id) && id === v ? 'active-view'  : 'hidden-view'
+    );
+    // Simpler explicit set:
+    if (id === v) {
+      el.classList.remove('hidden-view'); el.classList.add('active-view');
+    } else {
+      el.classList.remove('active-view'); el.classList.add('hidden-view');
+    }
+  });
+
+  // Update nav highlight
+  cfg.navItems.forEach(item => {
+    const btn = document.getElementById(item.id);
+    if (!btn) return;
+    const div = btn.querySelector('div');
+    if (item.view === v) {
+      btn.className = `flex-1 flex flex-col items-center gap-1 py-2.5 ${item.color} transition-colors duration-200`;
+      div.className = `w-10 h-7 rounded-lg ${item.bg} flex items-center justify-center`;
+    } else {
+      btn.className = 'flex-1 flex flex-col items-center gap-1 py-2.5 text-slate-500 transition-colors duration-200';
+      div.className = 'w-10 h-7 rounded-lg flex items-center justify-center';
+    }
+  });
+
+  if (v === 'map') setTimeout(() => MAP && MAP.invalidateSize(), 60);
+}
+
+// ─────────────────────────────────────────────
+//  MAP INIT
+// ─────────────────────────────────────────────
+let MAP      = null;
+let mapReady = false;
+
+function createMap() {
+  MAP = L.map('map', {
+    zoomControl:false, attributionControl:false,
+    tap:true, dragging:true, touchZoom:true
+  }).setView([27.745,85.338], 13);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom:19 }).addTo(MAP);
+  L.control.zoom({ position:'topright' }).addTo(MAP);
+}
+
+// ─────────────────────────────────────────────
+//  ROUTE LOGIC
+// ─────────────────────────────────────────────
+let LOOP         = [];
+let LAZI_IDX_FWD = 0;
+let LAZI_IDX_BWD = 0;
+
+function closestIdx(path, latlng) {
+  let best = 0, bestD = Infinity;
+  path.forEach((p,i) => {
+    const d = Math.hypot(p[0]-latlng[0], p[1]-latlng[1]);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+}
+
+function etaSteps(busIdx) {
+  const toFwd = (LAZI_IDX_FWD - busIdx + LOOP.length) % LOOP.length;
+  const toBwd = (LAZI_IDX_BWD - busIdx + LOOP.length) % LOOP.length;
+  return Math.min(toFwd, toBwd);
+}
+
+function nearestWaypoint(busIdx) {
+  if (!LOOP.length) return '—';
+  const coord = LOOP[busIdx];
+  let best = WAYPOINTS[0], bestD = Infinity;
+  WAYPOINTS.forEach(w => {
+    const d = Math.hypot(w.latlng[0]-coord[0], w.latlng[1]-coord[1]);
+    if (d < bestD) { bestD = d; best = w; }
+  });
+  return best.name;
+}
+
+async function fetchStreetRoute() {
+  const coordStr = WAYPOINTS.map(w => `${w.latlng[1]},${w.latlng[0]}`).join(';');
+  const url = `https://router.project-osrm.org/route/v1/driving/${coordStr}?overview=full&geometries=geojson&steps=false`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (data.code !== 'Ok') throw new Error('OSRM: ' + data.code);
+  return data.routes[0].geometry.coordinates.map(c => [c[1],c[0]]);
+}
+
+function interpolate(pts, steps) {
+  const path = [];
+  for (let i = 0; i < pts.length-1; i++) {
+    const [aLat,aLng] = pts[i], [bLat,bLng] = pts[i+1];
+    for (let s = 0; s < steps; s++) {
+      const t = s/steps;
+      path.push([aLat+(bLat-aLat)*t, aLng+(bLng-aLng)*t]);
+    }
+  }
+  path.push(pts[pts.length-1]);
+  return path;
+}
+
+// ─────────────────────────────────────────────
+//  BUS DATA
+// ─────────────────────────────────────────────
+const BUS_COLORS = ['#38bdf8','#f59e0b','#a78bfa','#f472b6','#34d399'];
+const BUS_IDS    = ['BA 2 KHA 8840','BA 3 KHA 1295','BA 1 KHA 4421','BA 4 KHA 7730','BA 2 KHA 0093'];
+
+const buses = BUS_IDS.map((id,i) => ({
+  id, color:BUS_COLORS[i],
+  idx:0,
+  passengers:Math.floor(Math.random()*31)+5,
+  marker:null, tooltip:null
+}));
+
+// ─────────────────────────────────────────────
+//  BUS HTML
+// ─────────────────────────────────────────────
+function busIconHtml(color) {
+  return `<div style="width:28px;height:28px;background:${color};border-radius:50%;
+      display:flex;align-items:center;justify-content:center;cursor:pointer;
+      box-shadow:0 0 0 3px ${color}33,0 4px 12px rgba(0,0,0,0.6);
+      border:2px solid rgba(255,255,255,0.2);">
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="white">
+      <path d="M17 20H7v1a1 1 0 01-1 1H5a1 1 0 01-1-1v-1H3V8c0-2.21 3.58-4 8-4s8 1.79 8 4v12h-1v1a1 1 0 01-1 1h-1a1 1 0 01-1-1v-1zM5 8v4h14V8H5zm0 6v2h4v-2H5zm10 0v2h4v-2h-4z"/>
+    </svg>
+  </div>`;
+}
+
+function tooltipHtml(bus) {
+  return `<div class="bus-label">
+    <div class="bubble">${bus.id.split(' ').slice(-1)[0]} · <span class="hi">${bus.passengers}👤</span></div>
+    <div class="tail"></div>
+  </div>`;
+}
+
+// ─────────────────────────────────────────────
+//  BUILD MAP OVERLAYS
+// ─────────────────────────────────────────────
+function buildMapOverlays(routeCoords, usedOSRM) {
+  L.polyline(routeCoords, {
+    color:'#38bdf8', weight:4, opacity:0.65, lineCap:'round', lineJoin:'round'
+  }).addTo(MAP);
+
+  MAP.fitBounds(L.polyline(routeCoords).getBounds(), { padding:[40,40] });
+
+  WAYPOINTS.forEach((w,i) => {
+    if (i === USER_STOP_IDX) {
+      L.marker(w.latlng, {
+        icon:L.divIcon({ html:`<div class="user-pin-outer"><div class="user-pin-inner"></div></div>`, className:'', iconSize:[22,22], iconAnchor:[11,11] }),
+        zIndexOffset:200
+      })
+      .bindTooltip('📍 Lazimpat · Your Stop', { permanent:false, direction:'top', className:'bus-tooltip', offset:[0,-14] })
+      .addTo(MAP);
+    } else {
+      L.marker(w.latlng, {
+        icon:L.divIcon({ className:'stop-dot', iconSize:[10,10], iconAnchor:[5,5] }), zIndexOffset:100
+      })
+      .bindTooltip(w.name, { permanent:false, direction:'top', className:'bg-slate-900/90 text-slate-200 text-xs border-slate-700 rounded-lg px-2 py-1 shadow-xl border', offset:[0,-8] })
+      .addTo(MAP);
+    }
+  });
+
+  if (usedOSRM) {
+    const b = document.getElementById('route-badge');
+    b.textContent = '🛣️ Street-accurate';
+    b.classList.add('text-sky-400','border','border-sky-800/40','bg-sky-950/30');
+  }
+
+  const GAP = Math.floor(LOOP.length / BUS_IDS.length);
+  buses.forEach((bus,i) => {
+    bus.idx = i * GAP;
+    const coord = LOOP[bus.idx];
+    if (bus.marker) MAP.removeLayer(bus.marker);
+    bus.marker = L.marker(coord, {
+      icon:L.divIcon({ html:busIconHtml(bus.color), className:'', iconSize:[28,28], iconAnchor:[14,14] }),
+      zIndexOffset:500
+    }).addTo(MAP);
+
+    bus.tooltip = L.tooltip({
+      permanent:true, direction:'top', offset:[0,-16], className:'bus-tooltip', interactive:false
+    }).setContent(tooltipHtml(bus)).setLatLng(coord);
+
+    bus.marker.bindTooltip(bus.tooltip).openTooltip();
+    bus.marker.on('click', () => openSheet(i));
+  });
+}
+
+// ─────────────────────────────────────────────
+//  ASYNC INIT
+// ─────────────────────────────────────────────
+let simInterval = null;
+
+async function initApp() {
+  createMap();
+
+  let routeCoords, usedOSRM = false;
+  try {
+    routeCoords = await fetchStreetRoute();
+    usedOSRM = true;
+  } catch(e) {
+    console.warn('OSRM fallback:', e);
+    routeCoords = interpolate(WAYPOINTS.map(w => w.latlng), 60);
+  }
+
+  const FWD = routeCoords;
+  const BWD = [...FWD].reverse();
+  LOOP = [...FWD, ...BWD.slice(1, BWD.length-1)];
+  LAZI_IDX_FWD = closestIdx(FWD, USER_STOP_LATLNG);
+  LAZI_IDX_BWD = LOOP.length - LAZI_IDX_FWD;
+
+  buildMapOverlays(routeCoords, usedOSRM);
+
+  const overlay = document.getElementById('map-loading');
+  overlay.style.transition = 'opacity 0.4s';
+  overlay.style.opacity = '0';
+  setTimeout(() => overlay.remove(), 450);
+
+  mapReady = true;
+  renderAll();
+  if (simInterval) clearInterval(simInterval);
+  simInterval = setInterval(simulate, 1000);
+}
+
+// ─────────────────────────────────────────────
+//  SIMULATION
+// ─────────────────────────────────────────────
+let tick = 0;
+
+function simulate() {
+  tick++;
+  buses.forEach(bus => {
+    bus.idx = (bus.idx + 1) % LOOP.length;
+    const coord = LOOP[bus.idx];
+    bus.marker.setLatLng(coord);
+    bus.tooltip.setContent(tooltipHtml(bus));
+    bus.tooltip.setLatLng(coord);
+    if (tick % 5 === 0) bus.passengers = Math.floor(Math.random()*31)+5;
+  });
+  renderAll();
+  if (sheetOpen) renderSheet();
+}
+
+function renderAll() {
+  renderMapChips();
+  if (currentRole === 'owner')     renderDashboard();
+  if (currentRole === 'passenger') renderTripView();
+}
+
+// ─────────────────────────────────────────────
+//  MAP CHIPS
+// ─────────────────────────────────────────────
+function renderMapChips() {
+  const c = document.getElementById('map-bus-chips');
+  if (!c) return;
+  if (c.children.length !== buses.length) {
+    c.innerHTML = '';
+    buses.forEach((_,i) => {
+      const chip = document.createElement('button');
+      chip.id = 'chip-'+i;
+      chip.className = 'flex items-center gap-1.5 bg-slate-800 rounded-full px-2.5 py-1 flex-none border border-slate-700/50 active:bg-slate-700 transition-colors';
+      chip.onclick = () => openSheet(i);
+      c.appendChild(chip);
+    });
+  }
+  buses.forEach((bus,i) => {
+    const chip = document.getElementById('chip-'+i);
+    if (!chip) return;
+    chip.innerHTML = `
+      <span class="w-2 h-2 rounded-full flex-none" style="background:${bus.color}"></span>
+      <span class="text-[10px] font-bold text-slate-300">${bus.id.split(' ').slice(-1)[0]}</span>
+      <span class="text-[10px] text-slate-400">${bus.passengers}👤</span>`;
+  });
+}
+
+// ─────────────────────────────────────────────
+//  OWNER DASHBOARD
+// ─────────────────────────────────────────────
+function renderDashboard() {
+  let totalP = 0, totalR = 0;
+  buses.forEach(b => { totalP += b.passengers; totalR += b.passengers*FARE; });
+  setStatEl('stat-riders',  String(totalP));
+  setStatEl('stat-revenue', 'NPR '+totalR);
+  const pct = Math.round((totalP/(MAX_CAP*5))*100);
+  document.getElementById('stat-cap-pct').textContent = pct+'%';
+  document.getElementById('cap-bar').style.width = pct+'%';
+
+  const tbody = document.getElementById('fleet-tbody');
+  while (tbody.rows.length < buses.length) tbody.insertRow();
+  while (tbody.rows.length > buses.length) tbody.deleteRow(tbody.rows.length-1);
+  buses.forEach((bus,i) => {
+    const row  = tbody.rows[i];
+    const pct2 = Math.round((bus.passengers/MAX_CAP)*100);
+    const lc   = pct2>80?'#f87171':pct2>50?'#fbbf24':'#34d399';
+    row.innerHTML = `
+      <td class="py-3 px-4">
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full flex-none" style="background:${bus.color}"></span>
+          <span class="font-semibold text-slate-200 text-xs">${bus.id}</span>
+        </div>
+      </td>
+      <td class="py-3 px-4 text-center">
+        <span class="text-white font-bold">${bus.passengers}</span>
+        <span class="text-slate-500 text-xs"> /35</span>
+      </td>
+      <td class="py-3 px-4">
+        <div class="flex items-center gap-1.5">
+          <div class="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+            <div class="h-full rounded-full fill-bar" style="width:${pct2}%;background:${lc};"></div>
+          </div>
+          <span class="text-[10px] text-slate-400 w-6 text-right">${pct2}%</span>
+        </div>
+      </td>
+      <td class="py-3 px-4 text-right font-semibold text-emerald-400 text-sm">NPR ${bus.passengers*FARE}</td>`;
+  });
+}
+
+function setStatEl(id, val) {
+  const el = document.getElementById(id);
+  if (!el || el.textContent === val) return;
+  el.textContent = val;
+  el.classList.remove('num-update');
+  void el.offsetWidth;
+  el.classList.add('num-update');
+}
+
+// ─────────────────────────────────────────────
+//  PASSENGER TRIP VIEW
+// ─────────────────────────────────────────────
+function renderTripView() {
+  const sorted = buses.map((bus,i) => ({ bus, i, eta:etaSteps(bus.idx) }))
+    .sort((a,b) => a.eta - b.eta);
+
+  const list = document.getElementById('trip-bus-list');
+  if (!list) return;
+
+  if (list.children.length !== sorted.length || list.querySelector('.spinner')) {
+    list.innerHTML = '';
+    sorted.forEach(({ i }) => {
+      const card = document.createElement('div');
+      card.id = 'pcard-'+i;
+      list.appendChild(card);
+    });
+  }
+
+  sorted.forEach(({ bus, i, eta }, rank) => {
+    const el = document.getElementById('pcard-'+i);
+    if (!el) return;
+    const etaMin = Math.floor(eta/60), etaSec = eta%60;
+    const etaStr = etaMin > 0 ? `${etaMin}m ${etaSec}s` : `${etaSec}s`;
+    const pct    = Math.round((bus.passengers/MAX_CAP)*100);
+    const lc     = pct>80?'#f87171':pct>50?'#fbbf24':'#34d399';
+    const etaCls = eta<120?'eta-soon':eta<300?'eta-mid':'eta-far';
+    const seats  = MAX_CAP - bus.passengers;
+    const near   = nearestWaypoint(bus.idx);
+
+    el.className = 'rounded-2xl bg-slate-900 border border-slate-800 p-4 space-y-3';
+    el.innerHTML = `
+      <div class="flex items-center gap-3">
+        <div style="width:40px;height:40px;border-radius:12px;background:${bus.color}18;border:1.5px solid ${bus.color}44;display:flex;align-items:center;justify-content:center;flex:none;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="${bus.color}">
+            <path d="M17 20H7v1a1 1 0 01-1 1H5a1 1 0 01-1-1v-1H3V8c0-2.21 3.58-4 8-4s8 1.79 8 4v12h-1v1a1 1 0 01-1 1h-1a1 1 0 01-1-1v-1zM5 8v4h14V8H5zm0 6v2h4v-2H5zm10 0v2h4v-2h-4z"/>
+          </svg>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5 flex-wrap">
+            ${rank===0?'<span class="text-[9px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 rounded-full px-2 py-0.5 font-bold">CLOSEST</span>':''}
+            <p class="text-xs font-bold text-white truncate">${bus.id}</p>
+          </div>
+          <p class="text-[10px] text-slate-500 mt-0.5">Near <span class="text-slate-400">${near}</span></p>
+        </div>
+        <div class="flex-none text-right">
+          <span class="inline-block px-2.5 py-1 rounded-xl border text-xs font-bold ${etaCls}">${etaStr}</span>
+          <p class="text-[9px] text-slate-600 mt-0.5">to Lazimpat</p>
+        </div>
+      </div>
+      <div class="space-y-1">
+        <div class="flex justify-between text-[10px]">
+          <span class="text-slate-500">${bus.passengers} riders aboard</span>
+          <span style="color:${lc};">${seats>0?seats+' seats free':'Full'}</span>
+        </div>
+        <div class="h-2 rounded-full bg-slate-800 overflow-hidden">
+          <div class="h-full rounded-full fill-bar" style="width:${pct}%;background:${lc};"></div>
+        </div>
+      </div>
+      <div class="flex items-center justify-between pt-1 border-t border-slate-800/60">
+        <div class="flex items-center gap-1.5">
+          <i class="fa-solid fa-ticket text-amber-400 text-xs"></i>
+          <span class="text-xs text-slate-300">Fare: <span class="font-bold text-amber-400">NPR ${FARE}</span></span>
+        </div>
+        <button onclick="openSheet(${i})"
+          class="flex items-center gap-1.5 text-[10px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/20 rounded-full px-3 py-1.5 active:bg-purple-500/20 transition-colors">
+          <i class="fa-solid fa-circle-info text-xs"></i> Inspect Bus
+        </button>
+      </div>`;
+  });
+}
+
+// ─────────────────────────────────────────────
+//  INSPECT SHEET  (role-aware)
+// ─────────────────────────────────────────────
+let sheetOpen = false, sheetBusIdx = null;
+
+function openSheet(i) {
+  sheetBusIdx = i; sheetOpen = true;
+  renderSheet();
+  document.getElementById('inspect-sheet').classList.add('open');
+  document.getElementById('sheet-backdrop').classList.add('open');
+}
+
+function closeSheet() {
+  sheetOpen = false; sheetBusIdx = null;
+  document.getElementById('inspect-sheet').classList.remove('open');
+  document.getElementById('sheet-backdrop').classList.remove('open');
+}
+
+function renderSheet() {
+  if (!sheetOpen || sheetBusIdx === null || !LOOP.length) return;
+  const bus    = buses[sheetBusIdx];
+  const eta    = etaSteps(bus.idx);
+  const etaMin = Math.floor(eta/60), etaSec = eta%60;
+  const etaStr = etaMin>0?`${etaMin}m ${etaSec}s`:`${etaSec}s`;
+  const pct    = Math.round((bus.passengers/MAX_CAP)*100);
+  const lc     = pct>80?'#f87171':pct>50?'#fbbf24':'#34d399';
+  const near   = nearestWaypoint(bus.idx);
+  const rev    = bus.passengers*FARE;
+  const etaCls = eta<120?'eta-soon':eta<300?'eta-mid':'eta-far';
+  const etaIcon= eta<120?'🟢':eta<300?'🟡':'🔴';
+  const isOwner = currentRole === 'owner';
+
+  const coord = LOOP[bus.idx];
+  let cwi = 0, cwD = Infinity;
+  WAYPOINTS.forEach((w,wi) => {
+    const d = Math.hypot(w.latlng[0]-coord[0], w.latlng[1]-coord[1]);
+    if (d < cwD) { cwD = d; cwi = wi; }
+  });
+
+  const trackDots = WAYPOINTS.map((w,wi) => {
+    const isUser=wi===USER_STOP_IDX, isCur=wi===cwi, isPast=wi<cwi;
+    const dotBg = isCur?bus.color:isUser&&!isCur?'#a855f7':isPast?'#334155':'#1e293b';
+    const sz    = isCur?'13px':'8px';
+    const border= isCur?`border:2px solid ${bus.color};box-shadow:0 0 6px ${bus.color}88;`
+                 :isUser?'border:2px solid #a855f7;':'border:1px solid #334155;';
+    return `<div title="${w.name}${isUser?' 📍':''}" style="width:${sz};height:${sz};border-radius:50%;background:${dotBg};${border}flex:none;transition:all 0.4s;"></div>`;
+  }).join(`<div style="flex:1;height:2px;background:#1e293b;margin:0 2px;"></div>`);
+
+  document.getElementById('sheet-content').innerHTML = `
+    <!-- Header -->
+    <div class="flex items-center gap-3 mb-5">
+      <div style="width:44px;height:44px;border-radius:14px;background:${bus.color}18;border:1.5px solid ${bus.color}55;display:flex;align-items:center;justify-content:center;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="${bus.color}">
+          <path d="M17 20H7v1a1 1 0 01-1 1H5a1 1 0 01-1-1v-1H3V8c0-2.21 3.58-4 8-4s8 1.79 8 4v12h-1v1a1 1 0 01-1 1h-1a1 1 0 01-1-1v-1zM5 8v4h14V8H5zm0 6v2h4v-2H5zm10 0v2h4v-2h-4z"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-[10px] text-slate-500 uppercase tracking-wider font-bold">${isOwner?'Fleet Inspection':'Bus Info'}</p>
+        <p class="text-lg font-extrabold text-white truncate">${bus.id}</p>
+      </div>
+      <button onclick="closeSheet()" class="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white flex-none">
+        <i class="fa-solid fa-xmark text-sm"></i>
+      </button>
+    </div>
+
+    <!-- ETA + Fare/Revenue -->
+    <div class="grid grid-cols-2 gap-3 mb-4">
+      <div class="rounded-xl bg-slate-900 border border-slate-800 p-3 text-center">
+        <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold mb-1">ETA to Lazimpat</p>
+        <span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm font-bold ${etaCls}">${etaIcon} ${etaStr}</span>
+        <p class="text-[9px] text-slate-600 mt-1.5">Your stop</p>
+      </div>
+      ${isOwner
+        ? `<div class="rounded-xl bg-slate-900 border border-slate-800 p-3 text-center">
+             <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold mb-1">Trip Revenue</p>
+             <p class="text-2xl font-extrabold text-emerald-400">NPR ${rev}</p>
+             <p class="text-[9px] text-slate-500 font-semibold">${bus.passengers} × 25 NPR</p>
+           </div>`
+        : `<div class="rounded-xl bg-slate-900 border border-slate-800 p-3 text-center">
+             <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold mb-1">Your Fare</p>
+             <p class="text-2xl font-extrabold text-amber-400">NPR 25</p>
+             <p class="text-[9px] text-slate-500 font-semibold">Flat rate</p>
+           </div>`
+      }
+    </div>
+
+    <!-- Current position -->
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-3 flex items-center gap-3 mb-4">
+      <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-none" style="background:${bus.color}15;">
+        <i class="fa-solid fa-location-arrow text-sm" style="color:${bus.color};"></i>
+      </div>
+      <div>
+        <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold">Current Position</p>
+        <p class="text-sm font-semibold text-white">Near ${near}</p>
+      </div>
+    </div>
+
+    <!-- Route progress -->
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4 mb-4">
+      <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold mb-3">Route Progress</p>
+      <div class="flex items-center">${trackDots}</div>
+      <div class="flex justify-between mt-2">
+        <span class="text-[9px] text-slate-600">Ratnapark</span>
+        <span class="text-[9px] text-purple-400 font-semibold">📍 Lazimpat</span>
+        <span class="text-[9px] text-slate-600">Budhanilkantha</span>
+      </div>
+    </div>
+
+    <!-- Load bar -->
+    <div class="rounded-xl bg-slate-900 border border-slate-800 p-4 ${isOwner?'mb-4':''}">
+      <div class="flex items-center justify-between mb-2">
+        <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold">Passenger Load</p>
+        <span class="text-xs font-bold" style="color:${lc};">${bus.passengers} / ${MAX_CAP}</span>
+      </div>
+      <div class="h-3 rounded-full bg-slate-800 overflow-hidden">
+        <div class="h-full rounded-full fill-bar" style="width:${pct}%;background:${lc};"></div>
+      </div>
+      <div class="flex justify-between mt-1.5">
+        <span class="text-[9px] text-slate-600">Empty</span>
+        <span class="text-[9px]" style="color:${lc};">${pct}% full</span>
+        <span class="text-[9px] text-slate-600">Full</span>
+      </div>
+    </div>
+
+    ${isOwner
+      ? `<!-- Owner-only: total fleet revenue context -->
+         <div class="rounded-xl bg-emerald-950/30 border border-emerald-800/30 p-3 flex items-center justify-between">
+           <div class="flex items-center gap-2">
+             <i class="fa-solid fa-sack-dollar text-emerald-400 text-sm"></i>
+             <p class="text-xs text-slate-300 font-medium">Rate: ${bus.passengers} riders × NPR 25</p>
+           </div>
+           <p class="text-base font-extrabold text-emerald-400">NPR ${rev}</p>
+         </div>`
+      : ''
+    }`;
+}
+
+// ─────────────────────────────────────────────
+//  BOOTSTRAP
+// ─────────────────────────────────────────────
+// Restore saved role, or wait for user to pick
+const savedRole = localStorage.getItem('busbin_role');
+if (savedRole) {
+  selectRole(savedRole);
+}
+</script>
+</body>
+</html>
