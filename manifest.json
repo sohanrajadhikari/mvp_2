@@ -1,6 +1,6 @@
 {
-  "name": "MVP 2",
-  "short_name": "MVP2",
+  "name": "BusBin",
+  "short_name": "BusBin",
   "start_url": "/mvp_2/",
   "scope": "/mvp_2/",
   "display": "standalone",
